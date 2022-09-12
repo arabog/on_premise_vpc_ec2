@@ -1,0 +1,129 @@
+Parameters:
+  EnvironmentName: 
+    Description: An environment name that will be prefixed to resource names
+    Type: String
+
+  VpcCIDR:
+    Description: Please enter the IP range (CIDR notation) for this VPC
+    Type: String
+    Default: 10.0.0.0/16
+
+  PrivateSubnetCIDR:
+    Description: Please enter the IP range (CIDR notation) for the private subnet in the first AZ
+    Type: String
+    Default: 10.0.2.0/24
+
+  OnPremGateway:
+    Description: Please enter the IP address of the on-prem VPN Appliance
+    Type: String
+    Default: 4.3.2.1
+
+
+Resources:
+  VPC:
+    Type: AWS::EC2::VPC
+    Properties:
+      CidrBlock: !Ref VpcCIDR
+      EnableDnsHostnames: true
+      Tags:
+        - Key: Name
+          Value: !Ref EnvironmentName
+
+  # AWS::EC2::VPNGateway - Specifies a virtual private gateway. 
+  # A virtual private gateway is the endpoint(means of connecting 
+  # with public/private internet or ) on the VPC side of your VPN 
+  # connection. For public it's called Internet Gateway while for 
+  # private it is called VPNGateway(if there is no public subnet) 
+  # or NatGateway (if there is both public and private subnets)  
+  VPGateway:
+    Type: AWS::EC2::VPNGateway
+    Properties:
+      Type: ipsec.1
+      Tags:
+        - Key: Name
+          Value: !Sub "${EnvironmentName} VPN GW"
+
+  # VPCGatewayAttachment - Attaches an internet gateway or 
+  # a virtual private gateway to a VPC, enabling connectivity 
+  # between the internet and the VPC.
+  AttachVPNGateway:
+    Type: AWS::EC2::VPCGatewayAttachment
+    Properties:
+      VpcId: !Ref VPC
+      VpnGatewayId: !Ref VPGateway
+
+  PrivateSubnet:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref VPC
+      AvailabilityZone: !Select [0, !GetAZs '']
+      CidrBlock: !Ref PrivateSubnetCIDR
+      MapPublicIpOnLaunch: false
+      Tags:
+        - Key: Name
+          Value: !Sub ${EnvironmentName} Private Subnet (AZ)
+
+  # AWS::EC2::RouteTable - Specifies a route table for a specified 
+  # VPC. After you create a route table, you can add routes and 
+  # associate the table with a subnet. (It is an association btw
+  # RouteTable and VPC)
+  PrivateRouteTable:
+    Type: AWS::EC2::RouteTable
+    Properties: 
+      VpcId: !Ref VPC
+      Tags:
+        - Key: Name
+          Value: !Sub ${EnvironmentName} Private Route Table (AZ)
+
+  # AWS::EC2::Route - Specifies a route in a route-table within a VPC. 
+  # It combines the CIDR IP with Internet Gateway or VPGateway
+  # The route table cannot use the transit gateway until it has 
+  # successfully attached to the VPC. 
+
+  # OutboundRoute: includes a gateway and a CIDR blk/IP
+  DefaultPrivateRoute:
+    DependsOn: AttachVPNGateway
+    Type: AWS::EC2::Route
+    Properties: 
+      RouteTableId: !Ref PrivateRouteTable
+      DestinationCidrBlock: 0.0.0.0/0
+      GatewayId: !Ref VPGateway   #serves d purpose of NAT Gateway
+
+  # It is an association btw RouteTable and Subnet
+  PrivateSubnetRouteTableAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      RouteTableId: !Ref PrivateRouteTable
+      SubnetId: !Ref PrivateSubnet
+
+  OurVPNConnection:
+    Type: AWS::EC2::VPNConnection
+    Properties: 
+      Type: ipsec.1
+      StaticRoutesOnly: true
+      CustomerGatewayId: !Ref CustomerGateway
+      VpnGatewayId: !Ref VPGateway
+
+  # CustomerGateway  
+  CustomerGateway:
+    Type: AWS::EC2::CustomerGateway
+    Properties:
+      BgpAsn : 65000
+      IpAddress: !Ref 'OnPremGateway'
+      Type: ipsec.1
+      Tags:
+        - Key: Name
+          Value: !Sub "${EnvironmentName} On Prem Gateway"
+
+Outputs:
+  VPC:
+    Description: A reference to the created VPC
+    Value: !Ref VPC
+    Export:
+      Name: !Sub ${EnvironmentName}-VPCID
+
+  PrivateSubnet:
+    Description: A reference to the created Private Subnet
+    Value: !Ref PrivateSubnet
+    Export:
+      Name: !Sub ${EnvironmentName}-PriSubnetID
